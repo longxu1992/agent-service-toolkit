@@ -1,0 +1,20 @@
+version: '3'
+services:
+  agent_service:
+    image: service:latest
+    volumes:
+      - ./.env:/app/.env
+    ports:
+      - "80:80"
+    env_file:
+      - .env
+
+
+  streamlit_app:
+    image: streamlit:latest
+    ports:
+      - "8501:8501"
+    depends_on:
+      - agent_service
+    environment:
+      - AGENT_URL=http://agent_service
