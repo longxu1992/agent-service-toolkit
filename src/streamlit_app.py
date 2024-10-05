@@ -8,15 +8,15 @@ from client import AgentClient
 from schema import ChatMessage
 
 
-# A Streamlit app for interacting with the langgraph agent via a simple chat interface.
-# The app has three main functions which are all run async:
+# 这是一个用于通过简单聊天界面与langgraph代理交互的Streamlit应用。
+# 该应用有三个主要的异步运行函数:
 
-# - main() - sets up the streamlit app and high level structure
-# - draw_messages() - draws a set of chat messages - either replaying existing messages
-#   or streaming new ones.
-# - handle_feedback() - Draws a feedback widget and records feedback from the user.
+# - main() - 设置streamlit应用和高层结构
+# - draw_messages() - 绘制一组聊天消息 - 可以是重放现有消息
+#   或流式传输新消息。
+# - handle_feedback() - 绘制反馈小部件并记录用户反馈。
 
-# The app heavily uses AgentClient to interact with the agent's FastAPI endpoints.
+# 该应用大量使用AgentClient与代理的FastAPI端点进行交互.
 
 
 APP_TITLE = "Agent Service Toolkit"
@@ -141,37 +141,35 @@ async def draw_messages(
     is_new=False,
 ):
     """
-    Draws a set of chat messages - either replaying existing messages
-    or streaming new ones.
+    绘制一组聊天消息 - 可以是重放现有消息或流式传输新消息。
 
-    This function has additional logic to handle streaming tokens and tool calls.
-    - Use a placeholder container to render streaming tokens as they arrive.
-    - Use a status container to render tool calls. Track the tool inputs and outputs
-      and update the status container accordingly.
+    此函数有额外的逻辑来处理流式令牌和工具调用。
+    - 使用占位容器来渲染到达的流式令牌。
+    - 使用状态容器来渲染工具调用。跟踪工具输入和输出
+      并相应地更新状态容器。
 
-    The function also needs to track the last message container in session state
-    since later messages can draw to the same container. This is also used for
-    drawing the feedback widget in the latest chat message.
+    该函数还需要在会话状态中跟踪最后一条消息容器,
+    因为后续消息可以绘制到同一个容器中。这也用于
+    在最新的聊天消息中绘制反馈小部件。
 
-    Args:
-        messages_aiter: An async iterator over messages to draw.
-        is_new: Whether the messages are new or not.
+    参数:
+        messages_aiter: 要绘制的消息的异步迭代器。
+        is_new: 消息是否为新消息。
     """
 
-    # Keep track of the last message container
+    # 跟踪最后一条消息容器
     last_message_type = None
     st.session_state.last_message = None
 
-    # Placeholder for intermediate streaming tokens
+    # 用于中间流式令牌的占位符
     streaming_content = ""
     streaming_placeholder = None
 
-    # Iterate over the messages and draw them
+    # 遍历消息并绘制它们
     while msg := await anext(messages_agen, None):
-        # str message represents an intermediate token being streamed
+        # str消息表示正在流式传输的中间令牌
         if isinstance(msg, str):
-            # If placeholder is empty, this is the first token of a new message
-            # being streamed. We need to do setup.
+            # 如果占位符为空,这是正在流式传输的新消息的第一个令牌。我们需要进行设置。
             if not streaming_placeholder:
                 if last_message_type != "ai":
                     last_message_type = "ai"
@@ -183,30 +181,30 @@ async def draw_messages(
             streaming_placeholder.write(streaming_content)
             continue
         if not isinstance(msg, ChatMessage):
-            st.error(f"Unexpected message type: {type(msg)}")
+            st.error(f"意外的消息类型: {type(msg)}")
             st.write(msg)
             st.stop()
         match msg.type:
-            # A message from the user, the easiest case
+            # 来自用户的消息,最简单的情况
             case "human":
                 last_message_type = "human"
                 st.chat_message("human").write(msg.content)
 
-            # A message from the agent is the most complex case, since we need to
-            # handle streaming tokens and tool calls.
+            # 来自代理的消息是最复杂的情况,因为我们需要
+            # 处理流式令牌和工具调用。
             case "ai":
-                # If we're rendering new messages, store the message in session state
+                # 如果我们正在渲染新消息,将消息存储在会话状态中
                 if is_new:
                     st.session_state.messages.append(msg)
 
-                # If the last message type was not AI, create a new chat message
+                # 如果最后一条消息类型不是AI,创建一个新的聊天消息
                 if last_message_type != "ai":
                     last_message_type = "ai"
                     st.session_state.last_message = st.chat_message("ai")
 
                 with st.session_state.last_message:
-                    # If the message has content, write it out.
-                    # Reset the streaming variables to prepare for the next message.
+                    # 如果消息有内容,将其写出。
+                    # 重置流式变量以准备下一条消息。
                     if msg.content:
                         if streaming_placeholder:
                             streaming_placeholder.write(msg.content)
@@ -216,45 +214,44 @@ async def draw_messages(
                             st.write(msg.content)
 
                     if msg.tool_calls:
-                        # Create a status container for each tool call and store the
-                        # status container by ID to ensure results are mapped to the
-                        # correct status container.
+                        # 为每个工具调用创建一个状态容器,并按ID存储
+                        # 状态容器,以确保结果映射到正确的状态容器。
                         call_results = {}
                         for tool_call in msg.tool_calls:
                             status = st.status(
-                                f"""Tool Call: {tool_call["name"]}""",
+                                f"""工具调用: {tool_call["name"]}""",
                                 state="running" if is_new else "complete",
                             )
                             call_results[tool_call["id"]] = status
-                            status.write("Input:")
+                            status.write("输入:")
                             status.write(tool_call["args"])
 
-                        # Expect one ToolMessage for each tool call.
+                        # 为每个工具调用期望一个ToolMessage。
                         for _ in range(len(call_results)):
                             tool_result: ChatMessage = await anext(messages_agen)
                             if not tool_result.type == "tool":
-                                st.error(f"Unexpected ChatMessage type: {tool_result.type}")
+                                st.error(f"意外的ChatMessage类型: {tool_result.type}")
                                 st.write(tool_result)
                                 st.stop()
 
-                            # Record the message if it's new, and update the correct
-                            # status container with the result
+                            # 如果是新消息,记录消息,并用结果更新正确的
+                            # 状态容器
                             if is_new:
                                 st.session_state.messages.append(tool_result)
                             status = call_results[tool_result.tool_call_id]
-                            status.write("Output:")
+                            status.write("输出:")
                             status.write(tool_result.content)
                             status.update(state="complete")
 
-            # In case of an unexpected message type, log an error and stop
+            # 如果遇到意外的消息类型,记录错误并停止
             case _:
-                st.error(f"Unexpected ChatMessage type: {msg.type}")
+                st.error(f"意外的ChatMessage类型: {msg.type}")
                 st.write(msg)
                 st.stop()
 
 
 async def handle_feedback():
-    """Draws a feedback widget and records feedback from the user."""
+    """绘制反馈小部件并记录用户反馈。"""
 
     # Keep track of last feedback sent to avoid sending duplicates
     if "last_feedback" not in st.session_state:
