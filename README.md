@@ -231,3 +231,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+
+## 当前镜像构建
+
+```txt
+docker build -t service:latest -f Dockerfile.service .
+
+docker build -t streamlit:latest -f Dockerfile.app .
+
+```
+
+
