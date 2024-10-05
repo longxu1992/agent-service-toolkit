@@ -253,6 +253,12 @@ async def draw_messages(
 async def handle_feedback():
     """绘制反馈小部件并记录用户反馈。"""
 
+    # 检查当前环境是否为生产环境
+    env = os.getenv("ENV", "development")
+    if env == "production":
+        # 在生产环境中禁用反馈功能
+        return
+
     # Keep track of last feedback sent to avoid sending duplicates
     if "last_feedback" not in st.session_state:
         st.session_state.last_feedback = (None, None)
