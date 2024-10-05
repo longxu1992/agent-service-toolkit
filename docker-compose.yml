@@ -2,6 +2,8 @@ version: '3'
 services:
   agent_service:
     image: service:latest
+    environment:
+      - TZ=Asia/Shanghai
     volumes:
       - ./.env:/app/.env
     ports:
@@ -18,3 +20,5 @@ services:
       - agent_service
     environment:
       - AGENT_URL=http://agent_service
+      - TZ=Asia/Shanghai
+      - ENV=production
