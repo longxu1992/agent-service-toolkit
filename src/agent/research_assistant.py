@@ -30,8 +30,8 @@ agent_graph.add_node("Supervisor", supervisor_agent)
 # 设置入口点
 agent_graph.add_edge(START, "Supervisor")
 
-for member in members:
-    agent_graph.add_edge(member, "Supervisor")
+# for member in members:
+#     agent_graph.add_edge(member, "Supervisor")
 conditional_map = {k: k for k in members}
 conditional_map["FINISH"] = END
 agent_graph.add_conditional_edges("Supervisor", lambda x: x["next"], conditional_map)
