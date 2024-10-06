@@ -1,186 +1,112 @@
 from datetime import datetime
 import os
-from langchain_openai import ChatOpenAI
-from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.tools import DuckDuckGoSearchResults, OpenWeatherMapQueryRun
+import operator
+from typing import Annotated, Sequence, Literal
+from functools import partial
+from typing_extensions import TypedDict
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig, RunnableLambda
+from langchain_openai import ChatOpenAI
+from langchain_community.tools import DuckDuckGoSearchResults, OpenWeatherMapQueryRun
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph, MessagesState
+from langgraph.graph import END, START, StateGraph
 from langgraph.managed import IsLastStep
-from langgraph.prebuilt import ToolNode
-
+from langgraph.prebuilt import create_react_agent
+from pydantic import BaseModel
 from agent.tools import calculator
-from agent.llama_guard import LlamaGuard, LlamaGuardOutput, SafetyAssessment
 
+# 定义AgentState
+class AgentState(TypedDict):
+    # 添加注解，表示消息列表会被追加
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    next: str
 
-class AgentState(MessagesState):
-    safety: LlamaGuardOutput
-    is_last_step: IsLastStep
-
-
-# NOTE: models with streaming=True will send tokens as they are generated
-# if the /stream endpoint is called with stream_tokens=True (the default)
-models = {
-    "gpt-4o-mini": ChatOpenAI(model="gpt-4o-mini", temperature=0.5, streaming=True),
-}
-
-if os.getenv("GROQ_API_KEY") is not None:
-    models["llama-3.1-70b"] = ChatGroq(model="llama-3.1-70b-versatile", temperature=0.5)
-if os.getenv("GOOGLE_API_KEY") is not None:
-    models["gemini-1.5-flash"] = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash", temperature=0.5, streaming=True
-    )
-
+# 定义工具
 web_search = DuckDuckGoSearchResults(name="WebSearch")
 tools = [web_search, calculator]
 
-# Add weather tool if API key is set
-# Register for an API key at https://openweathermap.org/api/
-if os.getenv("OPENWEATHERMAP_API_KEY") is not None:
-    tools.append(OpenWeatherMapQueryRun(name="Weather"))
+# 创建Researcher代理
+researcher_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+researcher_agent = create_react_agent(researcher_llm, tools=tools)
 
-current_date = datetime.now().strftime("%B %d, %Y")
-instructions = f"""
-    You are a helpful research assistant with the ability to search the web and use other tools.
-    Today's date is {current_date}.
+def agent_node(state, agent, name):
+    result = agent.invoke(state)
+    return {
+        "messages": [HumanMessage(content=result["messages"][-1].content, name=name)]
+    }
 
-    NOTE: THE USER CAN'T SEE THE TOOL RESPONSE.
+researcher_node = partial(agent_node, agent=researcher_agent, name="Researcher")
 
-    A few things to remember:
-    - Please include markdown-formatted links to any citations used in your response. Only include one
-    or two citations per response unless more are needed. ONLY USE LINKS RETURNED BY THE TOOLS.
-    - Use calculator tool with numexpr to answer math questions. The user does not understand numexpr,
-      so for the final response, use human readable format - e.g. "300 * 200", not "(300 \\times 200)".
-    """
+# 定义Supervisor代理
+members = ["Researcher"]
+system_prompt = (
+    "You are a supervisor tasked with managing a conversation between the"
+    " following workers:  {members}. Given the following user request,"
+    " respond with the worker to act next. Each worker will perform a"
+    " task and respond with their results and status. When finished,"
+    " respond with FINISH."
+)
+options = ["FINISH"] + members
 
+class RouteResponse(BaseModel):
+    next: Literal[tuple(options)]
 
-def wrap_model(model: BaseChatModel):
-    model = model.bind_tools(tools)
-    preprocessor = RunnableLambda(
-        lambda state: [SystemMessage(content=instructions)] + state["messages"],
-        name="StateModifier",
-    )
-    return preprocessor | model
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="messages"),
+        (
+            "system",
+            "Given the conversation above, who should act next?"
+            " Or should we FINISH? Select one of: {options}",
+        ),
+    ]
+).partial(options=str(options), members=", ".join(members))
 
+supervisor_llm = ChatOpenAI(model="gpt-4o-mini")
 
-def format_safety_message(safety: LlamaGuardOutput) -> AIMessage:
-    content = (
-        f"This conversation was flagged for unsafe content: {', '.join(safety.unsafe_categories)}"
-    )
-    return AIMessage(content=content)
+def supervisor_agent(state):
+    supervisor_chain = prompt | supervisor_llm.with_structured_output(RouteResponse)
+    return supervisor_chain.invoke(state)
 
+# 构建StateGraph
+agent_graph = StateGraph(AgentState)
 
-async def acall_model(state: AgentState, config: RunnableConfig):
-    m = models[config["configurable"].get("model", "gpt-4o-mini")]
-    model_runnable = wrap_model(m)
-    response = await model_runnable.ainvoke(state, config)
+# 添加节点
+agent_graph.add_node("Researcher", researcher_node)
+agent_graph.add_node("supervisor", supervisor_agent)
 
-    # Run llama guard check here to avoid returning the message if it's unsafe
-    llama_guard = LlamaGuard()
-    safety_output = await llama_guard.ainvoke("Agent", state["messages"] + [response])
-    if safety_output.safety_assessment == SafetyAssessment.UNSAFE:
-        return {"messages": [format_safety_message(safety_output)], "safety": safety_output}
+# 设置入口点
+agent_graph.add_edge(START, "supervisor")
 
-    if state["is_last_step"] and response.tool_calls:
-        return {
-            "messages": [
-                AIMessage(
-                    id=response.id,
-                    content="Sorry, need more steps to process this request.",
-                )
-            ]
-        }
-    # We return a list, because this will get added to the existing list
-    return {"messages": [response]}
+# 从supervisor添加条件边
+conditional_map = {k: k for k in members}
+conditional_map["FINISH"] = END
+agent_graph.add_conditional_edges("supervisor", lambda x: x["next"], conditional_map)
 
+# 设置Researcher返回到supervisor
+agent_graph.add_edge("Researcher", "supervisor")
 
-async def llama_guard_input(state: AgentState, config: RunnableConfig):
-    llama_guard = LlamaGuard()
-    safety_output = await llama_guard.ainvoke("User", state["messages"])
-    return {"safety": safety_output}
-
-
-async def block_unsafe_content(state: AgentState, config: RunnableConfig):
-    safety: LlamaGuardOutput = state["safety"]
-    return {"messages": [format_safety_message(safety)]}
-
-
-def check_safety(state: AgentState):
-    safety: LlamaGuardOutput = state["safety"]
-    return "unsafe" if safety.safety_assessment == SafetyAssessment.UNSAFE else "safe"
-
-
-def pending_tool_calls(state: AgentState):
-    last_message = state["messages"][-1]
-    return "tools" if last_message.tool_calls else "done"
-
-
-def create_agent_graph():
-    agent_graph = StateGraph(AgentState)
-
-    # 添加节点
-    agent_graph.add_node("model", acall_model)
-    agent_graph.add_node("tools", ToolNode(tools))
-    agent_graph.add_node("guard_input", llama_guard_input)
-    agent_graph.add_node("block_unsafe_content", block_unsafe_content)
-
-    # 设置入口点
-    agent_graph.set_entry_point("guard_input")
-
-    # 添加条件边
-    agent_graph.add_conditional_edges(
-        "guard_input",
-        check_safety,
-        {"unsafe": "block_unsafe_content", "safe": "model"}
-    )
-
-    # 添加固定边
-    agent_graph.add_edge("block_unsafe_content", END)
-    agent_graph.add_edge("tools", "model")
-
-    # 添加模型输出后的条件边
-    agent_graph.add_conditional_edges(
-        "model",
-        pending_tool_calls,
-        {"tools": "tools", "done": END}
-    )
-
-    return agent_graph
-
-
-# 创建并编译代理
-agent = create_agent_graph()
-research_assistant = agent.compile(
+# 编译代理
+research_assistant = agent_graph.compile(
     checkpointer=MemorySaver(),
 )
 
 if __name__ == "__main__":
     import asyncio
-    from uuid import uuid4
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
+    from langchain_core.messages import HumanMessage
 
     async def main():
-        inputs = {"messages": [("user", "Find me a recipe for chocolate chip cookies")]}
-        result = await research_assistant.ainvoke(
+        # 示例输入
+        inputs = {"messages": [HumanMessage(content="帮我查找巧克力曲奇的食谱")]}
+        async for s in research_assistant.astream(
             inputs,
-            config=RunnableConfig(configurable={"thread_id": uuid4()}),
-        )
-        result["messages"][-1].pretty_print()
-
-        # Draw the agent graph as png
-        # requires:
-        # brew install graphviz
-        # export CFLAGS="-I $(brew --prefix graphviz)/include"
-        # export LDFLAGS="-L $(brew --prefix graphviz)/lib"
-        # pip install pygraphviz
-        #
-        # research_assistant.get_graph().draw_png("agent_diagram.png")
-
+            config=RunnableConfig(),
+        ):
+            if "__end__" not in s:
+                print(s)
+                print("----")
 
     asyncio.run(main())
