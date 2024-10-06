@@ -3,11 +3,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 from typing import Literal, Sequence
 
-class RouteResponse(BaseModel):
-    next: Literal["Researcher", "TimeAgent", "FINISH"]
-
 members = ["Researcher", "TimeAgent"]
-options = ["FINISH"] + members
 
 system_prompt = (
     "You are a supervisor tasked with managing a conversation between the "
@@ -16,6 +12,9 @@ system_prompt = (
     "task and respond with their results and status. When finished, "
     "respond with FINISH."
 )
+# Our team supervisor is an LLM node. It just picks the next agent to process
+# and decides when the work is completed
+options = ["FINISH"] + members
 
 prompt = ChatPromptTemplate.from_messages(
     [
@@ -31,11 +30,11 @@ prompt = ChatPromptTemplate.from_messages(
 
 supervisor_llm = ChatOpenAI(model="gpt-4o-mini")
 
+
+class RouteResponse(BaseModel):
+    next: Literal[*options]
+
+
 def supervisor_agent(state):
-    # Supervisor节点的实现
     supervisor_chain = prompt | supervisor_llm.with_structured_output(RouteResponse)
-    # 只传入 messages
-    result = supervisor_chain.invoke(state.messages)
-    # 更新状态中的 next
-    state.next = result.next
-    return state
+    return supervisor_chain.invoke(state)

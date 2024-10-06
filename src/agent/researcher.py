@@ -1,12 +1,14 @@
+import functools
 import math
 import numexpr
 import re
 from langchain_core.tools import tool, BaseTool
-from langchain_core.messages import HumanMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from langchain_community.tools import DuckDuckGoSearchResults
 from langgraph.prebuilt import create_react_agent
-from typing import Sequence, Dict
+
+from agent.agent_node import agent_node
+
 
 # 定义 calculator 工具
 def calculator_func(expression: str) -> str:
@@ -34,9 +36,10 @@ def calculator_func(expression: str) -> str:
         return re.sub(r"^\[|\]$", "", output)
     except Exception as e:
         raise ValueError(
-            f'calculator("{expression}") raised error: {e}.' 
+            f'calculator("{expression}") raised error: {e}.'
             " Please try again with a valid numerical expression"
         )
+
 
 calculator: BaseTool = tool(calculator_func)
 calculator.name = "Calculator"
@@ -45,13 +48,7 @@ calculator.name = "Calculator"
 web_search = DuckDuckGoSearchResults(name="WebSearch")
 tools = [web_search, calculator]
 
-# 创建 Researcher 代理
-researcher_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
-researcher_agent = create_react_agent(researcher_llm, tools=tools)
 
-def researcher_node(state):
-    result = researcher_agent.invoke(state)
-    return {
-        "messages": state.messages + [HumanMessage(content=result["messages"][-1].content, name="Researcher")],
-        "next": "Supervisor"
-    }
+researcher_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+research_agent = create_react_agent(researcher_llm, tools=tools)
+research_node = functools.partial(agent_node, agent=research_agent, name="Researcher")
