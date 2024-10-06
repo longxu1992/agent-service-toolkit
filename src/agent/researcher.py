@@ -49,7 +49,7 @@ tools = [web_search, calculator]
 researcher_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
 researcher_agent = create_react_agent(researcher_llm, tools=tools)
 
-def researcher_node(state: Dict[str, Sequence[BaseMessage]]):
+def researcher_node(state):
     result = researcher_agent.invoke(state)
     return {
         "messages": state.messages + [HumanMessage(content=result["messages"][-1].content, name="Researcher")],

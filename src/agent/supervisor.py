@@ -4,9 +4,9 @@ from pydantic import BaseModel
 from typing import Literal, Sequence
 
 class RouteResponse(BaseModel):
-    next: Literal["Researcher", "FINISH"]
+    next: Literal["Researcher", "TimeAgent", "FINISH"]
 
-members = ["Researcher"]
+members = ["Researcher", "TimeAgent"]
 options = ["FINISH"] + members
 
 system_prompt = (
@@ -32,6 +32,7 @@ prompt = ChatPromptTemplate.from_messages(
 supervisor_llm = ChatOpenAI(model="gpt-4o-mini")
 
 def supervisor_agent(state):
+    # Supervisor节点的实现
     supervisor_chain = prompt | supervisor_llm.with_structured_output(RouteResponse)
     # 只传入 messages
     result = supervisor_chain.invoke(state.messages)
