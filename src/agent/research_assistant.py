@@ -108,51 +108,54 @@ async def block_unsafe_content(state: AgentState, config: RunnableConfig):
     return {"messages": [format_safety_message(safety)]}
 
 
-# Define the graph
-agent = StateGraph(AgentState)
-agent.add_node("model", acall_model)
-agent.add_node("tools", ToolNode(tools))
-agent.add_node("guard_input", llama_guard_input)
-agent.add_node("block_unsafe_content", block_unsafe_content)
-agent.set_entry_point("guard_input")
-
-
-# Check for unsafe input and block further processing if found
 def check_safety(state: AgentState):
     safety: LlamaGuardOutput = state["safety"]
-    match safety.safety_assessment:
-        case SafetyAssessment.UNSAFE:
-            return "unsafe"
-        case _:
-            return "safe"
+    return "unsafe" if safety.safety_assessment == SafetyAssessment.UNSAFE else "safe"
 
 
-agent.add_conditional_edges(
-    "guard_input", check_safety, {"unsafe": "block_unsafe_content", "safe": "model"}
-)
-
-# Always END after blocking unsafe content
-agent.add_edge("block_unsafe_content", END)
-
-# Always run "model" after "tools"
-agent.add_edge("tools", "model")
-
-
-# After "model", if there are tool calls, run "tools". Otherwise END.
 def pending_tool_calls(state: AgentState):
     last_message = state["messages"][-1]
-    if last_message.tool_calls:
-        return "tools"
-    else:
-        return "done"
+    return "tools" if last_message.tool_calls else "done"
 
 
-agent.add_conditional_edges("model", pending_tool_calls, {"tools": "tools", "done": END})
+def create_agent_graph():
+    agent_graph = StateGraph(AgentState)
 
+    # 添加节点
+    agent_graph.add_node("model", acall_model)
+    agent_graph.add_node("tools", ToolNode(tools))
+    agent_graph.add_node("guard_input", llama_guard_input)
+    agent_graph.add_node("block_unsafe_content", block_unsafe_content)
+
+    # 设置入口点
+    agent_graph.set_entry_point("guard_input")
+
+    # 添加条件边
+    agent_graph.add_conditional_edges(
+        "guard_input",
+        check_safety,
+        {"unsafe": "block_unsafe_content", "safe": "model"}
+    )
+
+    # 添加固定边
+    agent_graph.add_edge("block_unsafe_content", END)
+    agent_graph.add_edge("tools", "model")
+
+    # 添加模型输出后的条件边
+    agent_graph.add_conditional_edges(
+        "model",
+        pending_tool_calls,
+        {"tools": "tools", "done": END}
+    )
+
+    return agent_graph
+
+
+# 创建并编译代理
+agent = create_agent_graph()
 research_assistant = agent.compile(
     checkpointer=MemorySaver(),
 )
-
 
 if __name__ == "__main__":
     import asyncio
@@ -160,6 +163,7 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
 
     load_dotenv()
+
 
     async def main():
         inputs = {"messages": [("user", "Find me a recipe for chocolate chip cookies")]}
@@ -177,5 +181,6 @@ if __name__ == "__main__":
         # pip install pygraphviz
         #
         # research_assistant.get_graph().draw_png("agent_diagram.png")
+
 
     asyncio.run(main())
