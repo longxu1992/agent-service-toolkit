@@ -2,7 +2,7 @@ from langchain_core.messages import HumanMessage
 
 
 def agent_node(state, agent, name):
-    result = agent.invoke(state)
+    agent.invoke(state)
     return {
-        "messages": [HumanMessage(content=result["messages"][-1].content, name=name)]
+        "messages": [HumanMessage(content=state["messages"][-1].content, name=name)]
     }
